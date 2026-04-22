@@ -83,16 +83,30 @@ class ArmoryEntry:
         return p is not None and p.suffix.lower() == ".o"
 
     def summary(self) -> dict:
+        """Minimal list-view entry (cheap tokens). Use armory_{alias,extension}_info for full manifest."""
+        return {
+            "command_name": self.command_name,
+            "version": self.version,
+            "help": self.help[:200],
+            "depends_on": self.depends_on,
+            "osarch": sorted({f"{f.os}/{f.arch}" for f in self.files if f.os and f.arch}),
+            "is_bof": any(f.path.lower().endswith(".o") for f in self.files),
+        }
+
+    def full_summary(self) -> dict:
+        """Detailed summary with files + URLs; used when the LLM explicitly asks for one entry."""
         return {
             "kind": self.kind,
             "name": self.name,
             "command_name": self.command_name,
             "version": self.version,
             "help": self.help,
+            "long_help": self.long_help,
             "repo_url": self.repo_url,
             "files": [{"os": f.os, "arch": f.arch, "path": f.path} for f in self.files],
             "depends_on": self.depends_on,
             "entrypoint": self.entrypoint,
+            "arguments": [{"name": a.name, "desc": a.desc, "type": a.type, "optional": a.optional} for a in self.arguments],
         }
 
 
