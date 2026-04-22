@@ -742,13 +742,30 @@ async def _target_meta(ctx: Context, target_kind: str, target_id: str) -> dict:
 
 @mcp.tool()
 async def armory_list_aliases(ctx: Context) -> str:
-    """List installed Sliver armory aliases (.NET assemblies like Rubeus, SharpHound, Seatbelt)."""
+    """Catalog of all armory ALIASES available LOCALLY on this operator.
+
+    Scans ~/.sliver-client/aliases/*/alias.json. These are .NET assemblies
+    (Rubeus, SharpHound, Seatbelt, Certify, SharpView, SharpUp, SharpRDP,
+    SharpDPAPI, SharpSCCM, KrbRelayUp, NoPowerShell, sqlrecon, ...). Use this
+    tool to DISCOVER what aliases you can run via `armory_run_alias`.
+    """
     return fmt([e.summary() for e in scan_aliases()])
 
 
 @mcp.tool()
 async def armory_list_extensions(ctx: Context) -> str:
-    """List installed Sliver armory extensions (BOFs, shared libs like kerberoast, c2tc-*)."""
+    """Catalog of all armory EXTENSIONS available LOCALLY on this operator.
+
+    Scans ~/.sliver-client/extensions/*/extension.json. Includes BOFs (Beacon
+    Object Files, .o COFF) like sa-whoami, sa-ipconfig, sa-ldapsearch, sa-cacls,
+    sa-netshares, c2tc-kerberoast, c2tc-winver, c2tc-klist, bof-roast, ... and
+    their coff-loader dependency. Use this tool to DISCOVER what extensions
+    you can run via `armory_run_extension`.
+
+    NOT the same as `armory_list_registered_extensions` — that queries the
+    TARGET implant's currently-loaded extensions, which is runtime state, not
+    a catalog of what's installable.
+    """
     return fmt([e.summary() for e in scan_extensions()])
 
 
@@ -907,7 +924,14 @@ async def armory_register_extension(
 
 @mcp.tool()
 async def armory_list_registered_extensions(ctx: Context, target_kind: str, target_id: str) -> str:
-    """List extensions currently loaded on the target (remote state)."""
+    """List extensions currently LOADED in the target implant's memory (remote RPC).
+
+    This is runtime state — returns sha256 names of PEs already registered via
+    RegisterExtension on the target. Typically just `coff-loader` after any BOF run.
+
+    NOT a catalog of installable extensions — for that use `armory_list_extensions`
+    (operator-side file scan of ~/.sliver-client/extensions/).
+    """
     from sliver.pb.sliverpb import sliver_pb2
     obj, _ = await _resolve(ctx, target_kind, target_id)
     req = sliver_pb2.ListExtensionsReq()
