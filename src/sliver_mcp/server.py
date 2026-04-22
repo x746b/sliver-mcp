@@ -949,16 +949,23 @@ async def armory_call_extension(
 async def armory_run_extension(
     ctx: Context, target_kind: str, target_id: str,
     command_name: str,
-    arguments: Optional[list] = None,
+    arguments: Optional[list | dict] = None,
     register: bool = True,
     resolve_deps: bool = True,
 ) -> str:
     """High-level: auto-register dep loader (for BOFs) or extension PE, pack args, call.
 
-    `arguments`: list of values in the order the manifest defines. Types are taken from the
-    manifest and encoded appropriately (int/short/string/wstring/file).
-    For BOFs, the call routes through the dep's coff-loader with an envelope
-    containing {bof_entrypoint, bof_data, packed_args}; Name is sha256(dep_binary).
+    `arguments` can be either:
+      - a positional list in manifest order, None to skip an optional arg
+        e.g. ["C:\\Windows\\temp"] for sa-cacls
+      - a dict keyed by arg name (mirrors Sliver CLI flag syntax)
+        e.g. {"filepath": "C:\\Windows\\temp"} for sa-cacls
+        e.g. {"computername": "DC01", "as-admin": 1} for sa-netshares
+
+    Types are taken from the manifest and encoded appropriately
+    (int/short/string/wstring/file). For BOFs, the call routes through the dep's
+    coff-loader with an envelope containing {bof_entrypoint, bof_data, packed_args};
+    Name is sha256(dep_binary).
     """
     from sliver.pb.sliverpb import sliver_pb2
     import json as _json
@@ -996,7 +1003,7 @@ async def armory_run_extension(
         except Exception: reg_result = {"raw": reg_json}
 
     try:
-        packed_inner_args = pack_bof_args(e.raw.get("arguments", []), arguments or [])
+        packed_inner_args = pack_bof_args(e.raw.get("arguments", []), arguments if arguments is not None else [])
     except Exception as exc:
         return err(f"arg packing failed: {exc}", arguments_spec=e.raw.get("arguments", []))
 

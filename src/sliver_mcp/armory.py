@@ -208,7 +208,7 @@ def find_extension(command_name: str, root: Path = DEFAULT_ARMORY_ROOT) -> Optio
 _SUPPORTED_BOF_TYPES = {"int", "int32", "short", "string", "wstring", "file"}
 
 
-def pack_bof_args(spec: list[dict[str, Any]], values: list[Any]) -> bytes:
+def pack_bof_args(spec: list[dict[str, Any]], values: list[Any] | dict[str, Any]) -> bytes:
     """Pack typed args for a BOF call (inner BOFArgsBuffer stream).
 
     Mirrors Sliver's client/core/bof.go BOFArgsBuffer encoding per-arg:
@@ -218,9 +218,18 @@ def pack_bof_args(spec: list[dict[str, Any]], values: list[Any]) -> bytes:
       wstring   → [u32 len_bytes][utf16le bytes][0x00 0x00]
       file      → [u32 len][bytes]
 
-    `spec`: manifest arguments list; `values`: Python values in spec order.
-    None in values skips an optional arg.
+    `spec`: manifest arguments list.
+    `values`: either a positional list (None skips optional args) or a dict keyed by
+    arg name (missing keys skip optional args). Dict form mirrors Sliver CLI's
+    flag syntax (`-filepath foo` → `{"filepath": "foo"}`).
     """
+    # Normalize dict form to positional list based on spec order
+    if isinstance(values, dict):
+        positional: list[Any] = []
+        for item in spec:
+            name = item.get("name", "")
+            positional.append(values.get(name))
+        values = positional
     out = bytearray()
     for i, item in enumerate(spec):
         typ = (item.get("type") or "string").lower()
