@@ -230,15 +230,27 @@ def pack_bof_args(spec: list[dict[str, Any]], values: list[Any] | dict[str, Any]
             name = item.get("name", "")
             positional.append(values.get(name))
         values = positional
+    # Defaults per type — matches Sliver CLI client/command/extensions/argparser.go
+    # which registers flag defaults so BOFs can read positionally without desync.
+    _defaults = {
+        "int": 0, "int32": 0, "integer": 0,
+        "short": 0,
+        "string": "", "wstring": "",
+        "file": b"",
+    }
     out = bytearray()
     for i, item in enumerate(spec):
         typ = (item.get("type") or "string").lower()
         optional = item.get("optional", False)
-        if i >= len(values) or values[i] is None:
-            if optional:
+        missing = i >= len(values) or values[i] is None
+        if missing:
+            if not optional:
+                raise ValueError(f"Missing required arg: {item.get('name')}")
+            val = _defaults.get(typ)
+            if val is None:
                 continue
-            raise ValueError(f"Missing required arg: {item.get('name')}")
-        val = values[i]
+        else:
+            val = values[i]
         if typ in ("int", "int32", "integer"):
             out += struct.pack("<I", int(val) & 0xFFFFFFFF)
         elif typ == "short":
