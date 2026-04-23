@@ -8,20 +8,20 @@ Designed to **complement** the official `sliver-client mcp` which ships with Sli
 
 | Area | This MCP (`sliver-mcp`) | Official (`sliver-client mcp`) |
 |------|-----|-----|
-| Filesystem (ls/cat/cd/rm/...) | — | ✅ 10 tools |
-| Exec (cmd, PS, shell, binary) | ✅ 4 tools | — |
-| Shellcode / Assembly / Sideload / DLL | ✅ 4 tools | — |
-| Upload / Download (binary-safe base64) | ✅ 2 tools | fs_cat text only |
-| Listeners (mtls/http/https/dns/wg + stagers) | ✅ 6 tools | — |
-| Implant generate / regenerate / builds / profiles | ✅ 7 tools | — |
-| Sessions & beacons lifecycle | ✅ 11 tools | ✅ list only |
-| Identity (getsystem/impersonate/runas/maketoken) | ✅ 5 tools | — |
-| Recon (ps/netstat/ifconfig/screenshot/procdump/ping) | ✅ 6 tools | — |
-| Environment + Registry | ✅ 6 tools | — |
-| **Armory aliases** (.NET assemblies: Rubeus, Seatbelt, SharpHound…) | ✅ | — |
-| **Armory BOFs** via coff-loader (sa-*, c2tc-*, bof-*…) | ✅ | — |
-| Intel (hosts/loot/canaries) | ✅ 4 tools | — |
-| Websites | ✅ 4 tools | — |
+| Filesystem (ls/cat/cd/rm/...) | — |  10 tools |
+| Exec (cmd, PS, shell, binary) |  4 tools | — |
+| Shellcode / Assembly / Sideload / DLL |  4 tools | — |
+| Upload / Download (binary-safe base64) |  2 tools | fs_cat text only |
+| Listeners (mtls/http/https/dns/wg + stagers) |  6 tools | — |
+| Implant generate / regenerate / builds / profiles |  7 tools | — |
+| Sessions & beacons lifecycle |  11 tools |  list only |
+| Identity (getsystem/impersonate/runas/maketoken) |  5 tools | — |
+| Recon (ps/netstat/ifconfig/screenshot/procdump/ping) |  6 tools | — |
+| Environment + Registry |  6 tools | — |
+| **Armory aliases** (.NET assemblies: Rubeus, Seatbelt, SharpHound…) |  | — |
+| **Armory BOFs** via coff-loader (sa-*, c2tc-*, bof-*…) |  | — |
+| Intel (hosts/loot/canaries) |  4 tools | — |
+| Websites |  4 tools | — |
 
 ## Requirements
 
