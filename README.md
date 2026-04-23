@@ -4,6 +4,11 @@ Python MCP server for the [Sliver C2](https://github.com/BishopFox/sliver) adver
 
 Designed to **complement** the official `sliver-client mcp` which ships with Sliver v1.7+ but covers only filesystem tools. Use both side-by-side.
 
+## Related 
+
+- **[EDR-Resilient Windows Payload Loader](https://github.com/x746b/shellcodes/tree/main/loader)** - A modular, multi-layer evasion loader for delivering e.g. Sliver beacon shellcode onto modern Windows targets with Microsoft Defender / EDR enabled. Cross-compiles from Kali Linux (MinGW-w64) or builds natively with VS2022.
+
+
 ## Scope
 
 | Area | This MCP (`sliver-mcp`) | Official (`sliver-client mcp`) |
